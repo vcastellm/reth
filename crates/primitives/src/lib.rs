@@ -43,6 +43,7 @@ pub mod serde_helper;
 pub mod snapshot;
 pub mod stage;
 mod storage;
+pub mod trace;
 /// Helpers for working with transactions
 mod transaction;
 pub mod trie;
