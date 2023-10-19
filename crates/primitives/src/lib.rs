@@ -43,6 +43,7 @@ pub mod serde_helper;
 pub mod snapshot;
 pub mod stage;
 mod storage;
+#[allow(missing_docs)]
 pub mod trace;
 /// Helpers for working with transactions
 mod transaction;

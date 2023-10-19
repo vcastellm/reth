@@ -1,41 +1,44 @@
 use std::collections::HashMap;
-use ethers_core::types::{H256, U256, AddressOrBytes};
+use alloy_primitives::{Address, U256, Bloom};
 
+#[derive(Debug)]
 pub struct ContractCodeUsage {
-    pub read: H256,
+    pub read: U256,
     pub write:Vec<u8>,
 }
 
-struct TxnTrace {
-    balance: Option<U256>,
-    nonce: Option<u64>,
-    storage_read: Vec<H256>,
-    storage_written: HashMap<H256, U256>,
-    code_usage: ContractCodeUsage,
+#[derive(Debug)]
+pub struct TxnTrace {
+    pub balance: Option<U256>,
+    pub nonce: Option<u64>,
+    pub storage_read: Vec<U256>,
+    pub storage_written: HashMap<U256, U256>,
+    pub code_usage: ContractCodeUsage,
 }
 
-struct TxnMeta {
-    byte_code: Vec<u8>,
-    new_txn_trie_node: Vec<u8>,
-    new_receipt_trie_node: Vec<u8>,
-    gas_used: u64,
-    bloom: Bloom,
+#[derive(Debug)]
+pub struct TxnMeta {
+    pub byte_code: Vec<u8>,
+    pub new_txn_trie_node: Vec<u8>,
+    pub new_receipt_trie_node: Vec<u8>,
+    pub gas_used: u64,
+    pub bloom: Bloom,
 }
 
-struct TxnInfo {
-    traces: HashMap<libcommon::Address, TxnTrace>,
-    meta: TxnMeta,
+#[derive(Debug)]
+pub struct TxnInfo {
+    pub traces: HashMap<Address, TxnTrace>,
+    pub meta: TxnMeta,
 }
 
-type BlockUsedCodeHashes = Vec<libcommon::Hash>;
+pub type BlockUsedCodeHashes = Vec<U256>;
+pub type TriePreImage = Vec<u8>;
+pub type StorageTriesPreImage = HashMap<Address, TriePreImage>;
 
-type TriePreImage = Vec<u8>;
-
-type StorageTriesPreImage = HashMap<libcommon::Address, TriePreImage>;
-
-struct BlockTrace {
-    state_trie: TriePreImage,
-    storage_tries: StorageTriesPreImage,
-    contract_code: BlockUsedCodeHashes,
-    txn_info: TxnInfo,
+#[derive(Debug)]
+pub struct BlockTrace {
+    pub state_trie: TriePreImage,
+    pub storage_tries: StorageTriesPreImage,
+    pub contract_code: BlockUsedCodeHashes,
+    pub txn_info: TxnInfo,
 }
