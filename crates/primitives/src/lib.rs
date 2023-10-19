@@ -46,7 +46,7 @@ mod storage;
 #[allow(missing_docs)]
 pub mod trace;
 /// Helpers for working with transactions
-mod transaction;
+pub mod transaction;
 pub mod trie;
 mod withdrawal;
 
