@@ -41,9 +41,10 @@ use reth_eth_wire::{
 use reth_metrics::common::mpsc::UnboundedMeteredSender;
 use reth_net_common::bandwidth_meter::BandwidthMeter;
 use reth_network_api::ReputationChangeKind;
-use reth_primitives::{listener::EventListeners, ForkId, NodeRecord, PeerId, B256};
+use reth_primitives::{ForkId, NodeRecord, PeerId, B256};
 use reth_provider::{BlockNumReader, BlockReader};
 use reth_rpc_types::{EthProtocolInfo, NetworkStatus};
+use reth_tokio_util::EventListeners;
 use std::{
     net::SocketAddr,
     pin::Pin,
@@ -677,7 +678,7 @@ where
                             let total_active =
                                 this.num_active_peers.fetch_add(1, Ordering::Relaxed) + 1;
                             this.metrics.connected_peers.set(total_active as f64);
-                            debug!(
+                            trace!(
                                 target: "net",
                                 ?remote_addr,
                                 %client_version,
@@ -767,7 +768,7 @@ where
                                 .notify(NetworkEvent::SessionClosed { peer_id, reason });
                         }
                         SwarmEvent::IncomingPendingSessionClosed { remote_addr, error } => {
-                            debug!(
+                            trace!(
                                 target : "net",
                                 ?remote_addr,
                                 ?error,

@@ -179,15 +179,12 @@ impl ParityTraceBuilder {
     /// Note: this is considered a convenience method that takes the state map of
     /// [ResultAndState] after inspecting a transaction
     /// with the [TracingInspector](crate::tracing::TracingInspector).
-    pub fn into_trace_results_with_state<DB>(
+    pub fn into_trace_results_with_state<DB: DatabaseRef>(
         self,
         res: &ResultAndState,
         trace_types: &HashSet<TraceType>,
         db: DB,
-    ) -> Result<TraceResults, DB::Error>
-    where
-        DB: DatabaseRef,
-    {
+    ) -> Result<TraceResults, DB::Error> {
         let ResultAndState { ref result, ref state } = res;
 
         let breadth_first_addresses = if trace_types.contains(&TraceType::VmTrace) {
@@ -381,7 +378,10 @@ impl ParityTraceBuilder {
         let maybe_memory = if step.memory.is_empty() {
             None
         } else {
-            Some(MemoryDelta { off: step.memory_size, data: step.memory.data().clone().into() })
+            Some(MemoryDelta {
+                off: step.memory_size,
+                data: step.memory.as_bytes().to_vec().into(),
+            })
         };
 
         // Calculate the stack items at this step
@@ -545,11 +545,11 @@ where
 
         let addr = addrs.next().expect("there should be an address");
 
-        let db_acc = db.basic(addr)?.unwrap_or_default();
+        let db_acc = db.basic_ref(addr)?.unwrap_or_default();
 
         let code_hash = if db_acc.code_hash != KECCAK_EMPTY { db_acc.code_hash } else { continue };
 
-        curr_ref.code = db.code_by_hash(code_hash)?.original_bytes();
+        curr_ref.code = db.code_by_hash_ref(code_hash)?.original_bytes();
     }
 
     Ok(())
@@ -595,7 +595,7 @@ where
             }
         } else {
             // account already exists, we need to fetch the account from the db
-            let db_acc = db.basic(addr)?.unwrap_or_default();
+            let db_acc = db.basic_ref(addr)?.unwrap_or_default();
 
             // update _changed_ storage values
             for (key, slot) in changed_acc.storage.iter().filter(|(_, slot)| slot.is_changed()) {

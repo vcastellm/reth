@@ -22,8 +22,8 @@ use reth_interfaces::{
 };
 use reth_payload_builder::{PayloadBuilderAttributes, PayloadBuilderHandle};
 use reth_primitives::{
-    constants::EPOCH_SLOTS, listener::EventListeners, stage::StageId, BlockNumHash, BlockNumber,
-    ChainSpec, Head, Header, SealedBlock, SealedHeader, B256, U256,
+    constants::EPOCH_SLOTS, stage::StageId, BlockNumHash, BlockNumber, ChainSpec, Head, Header,
+    SealedBlock, SealedHeader, B256, U256,
 };
 use reth_provider::{
     BlockIdReader, BlockReader, BlockSource, CanonChainTracker, ChainSpecProvider, ProviderError,
@@ -36,6 +36,7 @@ use reth_rpc_types::engine::{
 use reth_rpc_types_compat::engine::payload::{try_into_block, validate_block_hash};
 use reth_stages::{ControlFlow, Pipeline, PipelineError};
 use reth_tasks::TaskSpawner;
+use reth_tokio_util::EventListeners;
 use std::{
     pin::Pin,
     sync::Arc,
@@ -71,6 +72,7 @@ pub use handle::BeaconConsensusEngineHandle;
 mod forkchoice;
 use crate::hooks::{EngineHookEvent, EngineHooks, PolledHook};
 pub use forkchoice::ForkchoiceStatus;
+use reth_interfaces::blockchain_tree::BlockValidationKind;
 
 mod metrics;
 
@@ -346,7 +348,7 @@ where
             // If the checkpoint of any stage is less than the checkpoint of the first stage,
             // retrieve and return the block hash of the latest header and use it as the target.
             if stage_checkpoint < first_stage_checkpoint {
-                warn!(
+                debug!(
                     target: "consensus::engine",
                     first_stage_checkpoint,
                     inconsistent_stage_id = %stage_id,
@@ -630,8 +632,9 @@ where
             return Ok(OnForkChoiceUpdated::invalid_state())
         }
 
+        // check if the new head hash is connected to any ancestor that we previously marked as
+        // invalid
         let lowest_buffered_ancestor_fcu = self.lowest_buffered_ancestor_or(state.head_block_hash);
-
         if let Some(status) = self.check_invalid_ancestor(lowest_buffered_ancestor_fcu) {
             return Ok(OnForkChoiceUpdated::with_invalid(status))
         }
@@ -657,6 +660,7 @@ where
         let start = Instant::now();
         let make_canonical_result = self.blockchain.make_canonical(&state.head_block_hash);
         let elapsed = self.record_make_canonical_latency(start, &make_canonical_result);
+
         let status = match make_canonical_result {
             Ok(outcome) => {
                 match outcome {
@@ -867,7 +871,7 @@ where
         head_block.total_difficulty =
             self.blockchain.header_td_by_number(head_block.number)?.ok_or_else(|| {
                 RethError::Provider(ProviderError::TotalDifficultyNotFound {
-                    number: head_block.number,
+                    block_number: head_block.number,
                 })
             })?;
         self.sync_state_updater.update_status(head_block);
@@ -1293,7 +1297,9 @@ where
         debug_assert!(self.sync.is_pipeline_idle(), "pipeline must be idle");
 
         let block_hash = block.hash;
-        let status = self.blockchain.insert_block_without_senders(block.clone())?;
+        let status = self
+            .blockchain
+            .insert_block_without_senders(block.clone(), BlockValidationKind::Exhaustive)?;
         let mut latest_valid_hash = None;
         let block = Arc::new(block);
         let status = match status {
@@ -1414,7 +1420,10 @@ where
             return
         }
 
-        match self.blockchain.insert_block_without_senders(block) {
+        match self
+            .blockchain
+            .insert_block_without_senders(block, BlockValidationKind::SkipStateRootValidation)
+        {
             Ok(status) => {
                 match status {
                     InsertPayloadOk::Inserted(BlockStatus::Valid) => {

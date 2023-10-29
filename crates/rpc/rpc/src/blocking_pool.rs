@@ -71,11 +71,7 @@ impl BlockingTaskPool {
     /// Uses [`rayon::ThreadPoolBuilder::build`](rayon::ThreadPoolBuilder::build) defaults but
     /// increases the stack size to 8MB.
     pub fn build() -> Result<Self, rayon::ThreadPoolBuildError> {
-        Self::builder()
-            // increase stack size, mostly for RPC calls that use the evm: <https://github.com/paradigmxyz/reth/issues/3056> and  <https://github.com/bluealloy/revm/issues/305>
-            .stack_size(8 * 1024 * 1024)
-            .build()
-            .map(Self::new)
+        Self::builder().build().map(Self::new)
     }
 
     /// Asynchronous wrapper around Rayon's
@@ -149,7 +145,7 @@ impl<T> Future for BlockingTaskHandle<T> {
 ///
 /// This should only happen
 #[derive(Debug, Default, thiserror::Error)]
-#[error("Tokio channel dropped while awaiting result")]
+#[error("tokio channel dropped while awaiting result")]
 #[non_exhaustive]
 pub struct TokioBlockingTaskError;
 

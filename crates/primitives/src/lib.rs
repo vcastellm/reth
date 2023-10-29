@@ -23,7 +23,6 @@ mod block;
 mod chain;
 mod compression;
 pub mod constants;
-pub mod contract;
 pub mod eip4844;
 mod forkid;
 pub mod fs;
@@ -31,7 +30,6 @@ mod genesis;
 mod hardfork;
 mod header;
 mod integer_list;
-pub mod listener;
 mod log;
 mod net;
 mod peer;
@@ -39,6 +37,8 @@ mod precaution;
 pub mod proofs;
 mod prune;
 mod receipt;
+/// Helpers for working with revm
+pub mod revm;
 pub mod serde_helper;
 pub mod snapshot;
 pub mod stage;
@@ -53,7 +53,7 @@ mod withdrawal;
 pub use account::{Account, Bytecode};
 pub use block::{
     Block, BlockBody, BlockBodyRoots, BlockHashOrNumber, BlockId, BlockNumHash, BlockNumberOrTag,
-    BlockWithSenders, ForkBlock, SealedBlock, SealedBlockWithSenders,
+    BlockWithSenders, ForkBlock, RpcBlockHash, SealedBlock, SealedBlockWithSenders,
 };
 pub use bytes::{Buf, BufMut, BytesMut};
 pub use chain::{
@@ -63,8 +63,8 @@ pub use chain::{
 };
 pub use compression::*;
 pub use constants::{
-    DEV_GENESIS, EMPTY_OMMER_ROOT, GOERLI_GENESIS, HOLESKY_GENESIS, KECCAK_EMPTY, MAINNET_GENESIS,
-    SEPOLIA_GENESIS,
+    DEV_GENESIS_HASH, EMPTY_OMMER_ROOT_HASH, GOERLI_GENESIS_HASH, HOLESKY_GENESIS_HASH,
+    KECCAK_EMPTY, MAINNET_GENESIS_HASH, SEPOLIA_GENESIS_HASH,
 };
 pub use eip4844::{calculate_excess_blob_gas, kzg_to_versioned_hash};
 pub use forkid::{ForkFilter, ForkHash, ForkId, ForkTransition, ValidationError};
@@ -88,12 +88,12 @@ pub use snapshot::SnapshotSegment;
 pub use storage::StorageEntry;
 pub use transaction::{
     util::secp256k1::{public_key_to_address, recover_signer, sign_message},
-    AccessList, AccessListItem, AccessListWithGasUsed, BlobTransaction, BlobTransactionSidecar,
+    AccessList, AccessListItem, BlobTransaction, BlobTransactionSidecar,
     BlobTransactionValidationError, FromRecoveredPooledTransaction, FromRecoveredTransaction,
     IntoRecoveredTransaction, InvalidTransactionError, PooledTransactionsElement,
     PooledTransactionsElementEcRecovered, Signature, Transaction, TransactionKind, TransactionMeta,
     TransactionSigned, TransactionSignedEcRecovered, TransactionSignedNoHash, TxEip1559, TxEip2930,
-    TxEip4844, TxLegacy, TxType, TxValue, EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID,
+    TxEip4844, TxHashOrNumber, TxLegacy, TxType, TxValue, EIP1559_TX_TYPE_ID, EIP2930_TX_TYPE_ID,
     EIP4844_TX_TYPE_ID, LEGACY_TX_TYPE_ID,
 };
 pub use withdrawal::Withdrawal;

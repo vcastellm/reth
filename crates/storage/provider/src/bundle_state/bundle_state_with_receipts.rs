@@ -6,10 +6,11 @@ use reth_db::{
 };
 use reth_interfaces::db::DatabaseError;
 use reth_primitives::{
-    keccak256, logs_bloom, Account, Address, BlockNumber, Bloom, Bytecode, Log, Receipt, Receipts,
-    StorageEntry, B256, U256,
+    keccak256, logs_bloom,
+    revm::compat::{into_reth_acc, into_revm_acc},
+    Account, Address, BlockNumber, Bloom, Bytecode, Log, Receipt, Receipts, StorageEntry, B256,
+    U256,
 };
-use reth_revm_primitives::{into_reth_acc, into_revm_acc};
 use reth_trie::{
     hashed_cursor::{HashedPostState, HashedPostStateCursorFactory, HashedStorage},
     StateRoot, StateRootError,
@@ -379,10 +380,10 @@ mod tests {
         tables,
         test_utils::create_test_rw_db,
         transaction::DbTx,
-        DatabaseEnv,
     };
-    use reth_primitives::{Address, Receipt, Receipts, StorageEntry, B256, MAINNET, U256};
-    use reth_revm_primitives::into_reth_acc;
+    use reth_primitives::{
+        revm::compat::into_reth_acc, Address, Receipt, Receipts, StorageEntry, B256, MAINNET, U256,
+    };
     use revm::{
         db::{
             states::{
@@ -397,11 +398,10 @@ mod tests {
         },
         CacheState, DatabaseCommit, State,
     };
-    use std::sync::Arc;
 
     #[test]
     fn write_to_db_account_info() {
-        let db: Arc<DatabaseEnv> = create_test_rw_db();
+        let db = create_test_rw_db();
         let factory = ProviderFactory::new(db, MAINNET.clone());
         let provider = factory.provider_rw().unwrap();
 
@@ -544,7 +544,7 @@ mod tests {
 
     #[test]
     fn write_to_db_storage() {
-        let db: Arc<DatabaseEnv> = create_test_rw_db();
+        let db = create_test_rw_db();
         let factory = ProviderFactory::new(db, MAINNET.clone());
         let provider = factory.provider_rw().unwrap();
 
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn write_to_db_multiple_selfdestructs() {
-        let db: Arc<DatabaseEnv> = create_test_rw_db();
+        let db = create_test_rw_db();
         let factory = ProviderFactory::new(db, MAINNET.clone());
         let provider = factory.provider_rw().unwrap();
 
@@ -1050,7 +1050,7 @@ mod tests {
 
     #[test]
     fn storage_change_after_selfdestruct_within_block() {
-        let db: Arc<DatabaseEnv> = create_test_rw_db();
+        let db = create_test_rw_db();
         let factory = ProviderFactory::new(db, MAINNET.clone());
         let provider = factory.provider_rw().unwrap();
 

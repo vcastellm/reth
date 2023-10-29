@@ -2,16 +2,16 @@
 
 use alloy_rlp::Encodable;
 use reth_primitives::{
-    Address, BlobTransactionSidecar, ChainSpec, Header, SealedBlock, Withdrawal, B256, U256,
+    revm::config::revm_spec_by_timestamp_after_merge, Address, BlobTransactionSidecar, ChainSpec,
+    Header, SealedBlock, Withdrawal, B256, U256,
 };
-use reth_revm_primitives::config::revm_spec_by_timestamp_after_merge;
 use reth_rpc_types::engine::{
     ExecutionPayloadEnvelopeV2, ExecutionPayloadEnvelopeV3, ExecutionPayloadV1, PayloadAttributes,
     PayloadId,
 };
 use reth_rpc_types_compat::engine::payload::{
     block_to_payload_v3, convert_block_to_payload_field_v2,
-    convert_standalone_withdraw_to_withdrawal, try_block_to_payload_v1,
+    convert_standalone_withdraw_to_withdrawal, from_primitive_sidecar, try_block_to_payload_v1,
 };
 use revm_primitives::{BlobExcessGasAndPrice, BlockEnv, CfgEnv, SpecId};
 /// Contains the built payload.
@@ -111,7 +111,11 @@ impl From<BuiltPayload> for ExecutionPayloadEnvelopeV3 {
             // Spec:
             // <https://github.com/ethereum/execution-apis/blob/fe8e13c288c592ec154ce25c534e26cb7ce0530d/src/engine/cancun.md#specification-2>
             should_override_builder: false,
-            blobs_bundle: sidecars.into(),
+            blobs_bundle: sidecars
+                .into_iter()
+                .map(from_primitive_sidecar)
+                .collect::<Vec<_>>()
+                .into(),
         }
     }
 }

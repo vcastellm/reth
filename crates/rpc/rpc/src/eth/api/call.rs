@@ -12,16 +12,16 @@ use crate::{
     EthApi,
 };
 use reth_network_api::NetworkInfo;
-use reth_primitives::{AccessListWithGasUsed, BlockId, BlockNumberOrTag, Bytes, U256};
+use reth_primitives::{revm::env::tx_env_with_recovered, BlockId, BlockNumberOrTag, Bytes, U256};
 use reth_provider::{
     BlockReaderIdExt, ChainSpecProvider, EvmEnvProvider, StateProvider, StateProviderFactory,
 };
-use reth_revm::{
-    access_list::AccessListInspector, database::StateProviderDatabase, env::tx_env_with_recovered,
-};
+use reth_revm::{access_list::AccessListInspector, database::StateProviderDatabase};
 use reth_rpc_types::{
-    state::StateOverride, BlockError, Bundle, CallRequest, EthCallResponse, StateContext,
+    state::StateOverride, AccessListWithGasUsed, BlockError, Bundle, CallRequest, EthCallResponse,
+    StateContext,
 };
+use reth_rpc_types_compat::log::{from_primitive_access_list, to_primitive_access_list};
 use reth_transaction_pool::TransactionPool;
 use revm::{
     db::{CacheDB, DatabaseRef},
@@ -87,6 +87,7 @@ where
         let transaction_index = transaction_index.unwrap_or_default();
 
         let target_block = block_number.unwrap_or(BlockId::Number(BlockNumberOrTag::Latest));
+
         let ((cfg, block_env, _), block) =
             futures::try_join!(self.evm_env_at(target_block), self.block_by_id(target_block))?;
 
@@ -206,7 +207,7 @@ where
                     if no_code_callee {
                         // simple transfer, check if caller has sufficient funds
                         let available_funds =
-                            db.basic(env.tx.caller)?.map(|acc| acc.balance).unwrap_or_default();
+                            db.basic_ref(env.tx.caller)?.map(|acc| acc.balance).unwrap_or_default();
                         if env.tx.value > available_funds {
                             return Err(
                                 RpcInvalidTransactionError::InsufficientFundsForTransfer.into()
@@ -378,7 +379,7 @@ where
         let to = if let Some(to) = request.to {
             to
         } else {
-            let nonce = db.basic(from)?.unwrap_or_default().nonce;
+            let nonce = db.basic_ref(from)?.unwrap_or_default().nonce;
             from.create(nonce)
         };
 
@@ -386,7 +387,8 @@ where
         let initial = request.access_list.take().unwrap_or_default();
 
         let precompiles = get_precompiles(env.cfg.spec_id);
-        let mut inspector = AccessListInspector::new(initial, from, to, precompiles);
+        let mut inspector =
+            AccessListInspector::new(to_primitive_access_list(initial), from, to, precompiles);
         let (result, env) = inspect(&mut db, env, &mut inspector)?;
 
         match result.result {
@@ -403,10 +405,10 @@ where
         let access_list = inspector.into_access_list();
 
         // calculate the gas used using the access list
-        request.access_list = Some(access_list.clone());
+        request.access_list = Some(from_primitive_access_list(access_list.clone()));
         let gas_used = self.estimate_gas_with(env.cfg, env.block, request, db.db.state())?;
 
-        Ok(AccessListWithGasUsed { access_list, gas_used })
+        Ok(AccessListWithGasUsed { access_list: from_primitive_access_list(access_list), gas_used })
     }
 }
 
