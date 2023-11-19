@@ -25,7 +25,7 @@ pub enum StageError {
     #[error("stage encountered an error in block #{number}: {error}", number = block.number)]
     Block {
         /// The block that caused the error.
-        block: SealedHeader,
+        block: Box<SealedHeader>,
         /// The specific error type, either consensus or execution error.
         #[source]
         error: BlockErrorKind,
@@ -43,13 +43,16 @@ pub enum StageError {
     )]
     DetachedHead {
         /// The local head we attempted to attach to.
-        local_head: SealedHeader,
+        local_head: Box<SealedHeader>,
         /// The header we attempted to attach.
-        header: SealedHeader,
+        header: Box<SealedHeader>,
         /// The error that occurred when attempting to attach the header.
         #[source]
         error: Box<consensus::ConsensusError>,
     },
+    /// The headers stage is missing sync gap.
+    #[error("missing sync gap")]
+    MissingSyncGap,
     /// The stage encountered a database error.
     #[error("internal database error occurred: {0}")]
     Database(#[from] DbError),
@@ -59,6 +62,10 @@ pub enum StageError {
     /// Invalid checkpoint passed to the stage
     #[error("invalid stage checkpoint: {0}")]
     StageCheckpoint(u64),
+    /// Missing download buffer on stage execution.
+    /// Returned if stage execution was called without polling for readiness.
+    #[error("missing download buffer")]
+    MissingDownloadBuffer,
     /// Download channel closed
     #[error("download channel closed")]
     ChannelClosed,
@@ -94,6 +101,8 @@ impl StageError {
                 StageError::Download(_) |
                 StageError::DatabaseIntegrity(_) |
                 StageError::StageCheckpoint(_) |
+                StageError::MissingDownloadBuffer |
+                StageError::MissingSyncGap |
                 StageError::ChannelClosed |
                 StageError::Fatal(_)
         )
@@ -109,9 +118,9 @@ pub enum PipelineError {
     /// The pipeline encountered a database error.
     #[error(transparent)]
     Database(#[from] DbError),
-    /// The pipeline encountered an irrecoverable error in one of the stages.
+    /// Provider error.
     #[error(transparent)]
-    Interface(#[from] RethError),
+    Provider(#[from] ProviderError),
     /// The pipeline encountered an error while trying to send an event.
     #[error("pipeline encountered an error while trying to send an event")]
     Channel(#[from] SendError<PipelineEvent>),

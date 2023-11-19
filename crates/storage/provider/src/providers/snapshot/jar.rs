@@ -1,222 +1,304 @@
 use super::LoadedJarRef;
-use crate::{BlockHashReader, BlockNumReader, HeaderProvider, TransactionsProvider};
+use crate::{
+    BlockHashReader, BlockNumReader, HeaderProvider, ReceiptProvider, TransactionsProvider,
+};
 use reth_db::{
-    table::{Decompress, Table},
-    HeaderTD,
+    codecs::CompactU256,
+    snapshot::{HeaderMask, ReceiptMask, SnapshotCursor, TransactionMask},
 };
-use reth_interfaces::{provider::ProviderError, RethResult};
-use reth_nippy_jar::NippyJarCursor;
+use reth_interfaces::provider::{ProviderError, ProviderResult};
 use reth_primitives::{
-    snapshot::SegmentHeader, Address, BlockHash, BlockHashOrNumber, BlockNumber, ChainInfo, Header,
-    SealedHeader, TransactionMeta, TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber,
-    B256, U256,
+    Address, BlockHash, BlockHashOrNumber, BlockNumber, ChainInfo, Header, Receipt, SealedHeader,
+    TransactionMeta, TransactionSigned, TransactionSignedNoHash, TxHash, TxNumber, B256, U256,
 };
-use std::ops::{Deref, RangeBounds};
+use std::ops::{Deref, Range, RangeBounds};
 
 /// Provider over a specific `NippyJar` and range.
 #[derive(Debug)]
-pub struct SnapshotJarProvider<'a>(LoadedJarRef<'a>);
+pub struct SnapshotJarProvider<'a> {
+    /// Main snapshot segment
+    jar: LoadedJarRef<'a>,
+    /// Another kind of snapshot segment to help query data from the main one.
+    auxiliar_jar: Option<Box<Self>>,
+}
 
 impl<'a> Deref for SnapshotJarProvider<'a> {
     type Target = LoadedJarRef<'a>;
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.jar
     }
 }
 
 impl<'a> From<LoadedJarRef<'a>> for SnapshotJarProvider<'a> {
     fn from(value: LoadedJarRef<'a>) -> Self {
-        SnapshotJarProvider(value)
+        SnapshotJarProvider { jar: value, auxiliar_jar: None }
     }
 }
 
 impl<'a> SnapshotJarProvider<'a> {
     /// Provides a cursor for more granular data access.
-    pub fn cursor<'b>(&'b self) -> RethResult<NippyJarCursor<'a, SegmentHeader>>
+    pub fn cursor<'b>(&'b self) -> ProviderResult<SnapshotCursor<'a>>
     where
         'b: 'a,
     {
-        Ok(NippyJarCursor::with_handle(self.value(), self.mmap_handle())?)
+        SnapshotCursor::new(self.value(), self.mmap_handle())
+    }
+
+    /// Adds a new auxiliar snapshot to help query data from the main one
+    pub fn with_auxiliar(mut self, auxiliar_jar: SnapshotJarProvider<'a>) -> Self {
+        self.auxiliar_jar = Some(Box::new(auxiliar_jar));
+        self
     }
 }
 
 impl<'a> HeaderProvider for SnapshotJarProvider<'a> {
-    fn header(&self, block_hash: &BlockHash) -> RethResult<Option<Header>> {
-        // WIP
+    fn header(&self, block_hash: &BlockHash) -> ProviderResult<Option<Header>> {
+        Ok(self
+            .cursor()?
+            .get_two::<HeaderMask<Header, BlockHash>>(block_hash.into())?
+            .filter(|(_, hash)| hash == block_hash)
+            .map(|(header, _)| header))
+    }
+
+    fn header_by_number(&self, num: BlockNumber) -> ProviderResult<Option<Header>> {
+        self.cursor()?.get_one::<HeaderMask<Header>>(num.into())
+    }
+
+    fn header_td(&self, block_hash: &BlockHash) -> ProviderResult<Option<U256>> {
+        Ok(self
+            .cursor()?
+            .get_two::<HeaderMask<CompactU256, BlockHash>>(block_hash.into())?
+            .filter(|(_, hash)| hash == block_hash)
+            .map(|(td, _)| td.into()))
+    }
+
+    fn header_td_by_number(&self, num: BlockNumber) -> ProviderResult<Option<U256>> {
+        Ok(self.cursor()?.get_one::<HeaderMask<CompactU256>>(num.into())?.map(Into::into))
+    }
+
+    fn headers_range(&self, range: impl RangeBounds<BlockNumber>) -> ProviderResult<Vec<Header>> {
+        let range = to_range(range);
+
         let mut cursor = self.cursor()?;
+        let mut headers = Vec::with_capacity((range.end - range.start) as usize);
 
-        let header = Header::decompress(
-            cursor.row_by_key_with_cols::<0b01, 2>(&block_hash.0).unwrap().unwrap()[0],
-        )
-        .unwrap();
-
-        if &header.hash_slow() == block_hash {
-            return Ok(Some(header))
-        } else {
-            // check next snapshot
+        for num in range.start..range.end {
+            if let Some(header) = cursor.get_one::<HeaderMask<Header>>(num.into())? {
+                headers.push(header);
+            }
         }
-        Ok(None)
+
+        Ok(headers)
     }
 
-    fn header_by_number(&self, num: BlockNumber) -> RethResult<Option<Header>> {
-        Header::decompress(
-            self.cursor()?
-                .row_by_number_with_cols::<0b01, 2>(
-                    (num - self.user_header().block_start()) as usize,
-                )?
-                .ok_or(ProviderError::HeaderNotFound(num.into()))?[0],
-        )
-        .map(Some)
-        .map_err(Into::into)
+    fn sealed_header(&self, number: BlockNumber) -> ProviderResult<Option<SealedHeader>> {
+        Ok(self
+            .cursor()?
+            .get_two::<HeaderMask<Header, BlockHash>>(number.into())?
+            .map(|(header, hash)| header.seal(hash)))
     }
 
-    fn header_td(&self, block_hash: &BlockHash) -> RethResult<Option<U256>> {
-        // WIP
-        let mut cursor = NippyJarCursor::with_handle(self.value(), self.mmap_handle())?;
-
-        let row = cursor.row_by_key_with_cols::<0b11, 2>(&block_hash.0).unwrap().unwrap();
-
-        let header = Header::decompress(row[0]).unwrap();
-        let td = <HeaderTD as Table>::Value::decompress(row[1]).unwrap();
-
-        if &header.hash_slow() == block_hash {
-            return Ok(Some(td.0))
-        } else {
-            // check next snapshot
-        }
-        Ok(None)
-    }
-
-    fn header_td_by_number(&self, _number: BlockNumber) -> RethResult<Option<U256>> {
-        unimplemented!();
-    }
-
-    fn headers_range(&self, _range: impl RangeBounds<BlockNumber>) -> RethResult<Vec<Header>> {
-        unimplemented!();
-    }
-
-    fn sealed_headers_range(
+    fn sealed_headers_while(
         &self,
-        _range: impl RangeBounds<BlockNumber>,
-    ) -> RethResult<Vec<SealedHeader>> {
-        unimplemented!();
-    }
+        range: impl RangeBounds<BlockNumber>,
+        mut predicate: impl FnMut(&SealedHeader) -> bool,
+    ) -> ProviderResult<Vec<SealedHeader>> {
+        let range = to_range(range);
 
-    fn sealed_header(&self, _number: BlockNumber) -> RethResult<Option<SealedHeader>> {
-        unimplemented!();
+        let mut cursor = self.cursor()?;
+        let mut headers = Vec::with_capacity((range.end - range.start) as usize);
+
+        for number in range.start..range.end {
+            if let Some((header, hash)) =
+                cursor.get_two::<HeaderMask<Header, BlockHash>>(number.into())?
+            {
+                let sealed = header.seal(hash);
+                if !predicate(&sealed) {
+                    break
+                }
+                headers.push(sealed);
+            }
+        }
+        Ok(headers)
     }
 }
 
 impl<'a> BlockHashReader for SnapshotJarProvider<'a> {
-    fn block_hash(&self, _number: u64) -> RethResult<Option<B256>> {
-        todo!()
+    fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+        self.cursor()?.get_one::<HeaderMask<BlockHash>>(number.into())
     }
 
     fn canonical_hashes_range(
         &self,
-        _start: BlockNumber,
-        _end: BlockNumber,
-    ) -> RethResult<Vec<B256>> {
-        todo!()
+        start: BlockNumber,
+        end: BlockNumber,
+    ) -> ProviderResult<Vec<B256>> {
+        let mut cursor = self.cursor()?;
+        let mut hashes = Vec::with_capacity((end - start) as usize);
+
+        for number in start..end {
+            if let Some(hash) = cursor.get_one::<HeaderMask<BlockHash>>(number.into())? {
+                hashes.push(hash)
+            }
+        }
+        Ok(hashes)
     }
 }
 
 impl<'a> BlockNumReader for SnapshotJarProvider<'a> {
-    fn chain_info(&self) -> RethResult<ChainInfo> {
-        todo!()
+    fn chain_info(&self) -> ProviderResult<ChainInfo> {
+        // Information on live database
+        Err(ProviderError::UnsupportedProvider)
     }
 
-    fn best_block_number(&self) -> RethResult<BlockNumber> {
-        todo!()
+    fn best_block_number(&self) -> ProviderResult<BlockNumber> {
+        // Information on live database
+        Err(ProviderError::UnsupportedProvider)
     }
 
-    fn last_block_number(&self) -> RethResult<BlockNumber> {
-        todo!()
+    fn last_block_number(&self) -> ProviderResult<BlockNumber> {
+        // Information on live database
+        Err(ProviderError::UnsupportedProvider)
     }
 
-    fn block_number(&self, _hash: B256) -> RethResult<Option<BlockNumber>> {
-        todo!()
+    fn block_number(&self, hash: B256) -> ProviderResult<Option<BlockNumber>> {
+        let mut cursor = self.cursor()?;
+
+        Ok(cursor
+            .get_one::<HeaderMask<BlockHash>>((&hash).into())?
+            .and_then(|res| (res == hash).then(|| cursor.number())))
     }
 }
 
 impl<'a> TransactionsProvider for SnapshotJarProvider<'a> {
-    fn transaction_id(&self, _tx_hash: TxHash) -> RethResult<Option<TxNumber>> {
-        todo!()
+    fn transaction_id(&self, hash: TxHash) -> ProviderResult<Option<TxNumber>> {
+        let mut cursor = self.cursor()?;
+
+        Ok(cursor
+            .get_one::<TransactionMask<TransactionSignedNoHash>>((&hash).into())?
+            .and_then(|res| (res.hash() == hash).then(|| cursor.number())))
     }
 
-    fn transaction_by_id(&self, num: TxNumber) -> RethResult<Option<TransactionSigned>> {
-        TransactionSignedNoHash::decompress(
-            self.cursor()?
-                .row_by_number_with_cols::<0b1, 1>((num - self.user_header().tx_start()) as usize)?
-                .ok_or(ProviderError::TransactionNotFound(num.into()))?[0],
-        )
-        .map(Into::into)
-        .map(Some)
-        .map_err(Into::into)
+    fn transaction_by_id(&self, num: TxNumber) -> ProviderResult<Option<TransactionSigned>> {
+        Ok(self
+            .cursor()?
+            .get_one::<TransactionMask<TransactionSignedNoHash>>(num.into())?
+            .map(|tx| tx.with_hash()))
     }
 
     fn transaction_by_id_no_hash(
         &self,
-        _id: TxNumber,
-    ) -> RethResult<Option<TransactionSignedNoHash>> {
-        todo!()
+        num: TxNumber,
+    ) -> ProviderResult<Option<TransactionSignedNoHash>> {
+        self.cursor()?.get_one::<TransactionMask<TransactionSignedNoHash>>(num.into())
     }
 
-    fn transaction_by_hash(&self, hash: TxHash) -> RethResult<Option<TransactionSigned>> {
-        // WIP
-        let mut cursor = self.cursor()?;
-
-        let tx = TransactionSignedNoHash::decompress(
-            cursor.row_by_key_with_cols::<0b1, 1>(&hash.0).unwrap().unwrap()[0],
-        )
-        .unwrap()
-        .with_hash();
-
-        if tx.hash() == hash {
-            return Ok(Some(tx))
-        } else {
-            // check next snapshot
-        }
-        Ok(None)
+    fn transaction_by_hash(&self, hash: TxHash) -> ProviderResult<Option<TransactionSigned>> {
+        Ok(self
+            .cursor()?
+            .get_one::<TransactionMask<TransactionSignedNoHash>>((&hash).into())?
+            .map(|tx| tx.with_hash()))
     }
 
     fn transaction_by_hash_with_meta(
         &self,
         _hash: TxHash,
-    ) -> RethResult<Option<(TransactionSigned, TransactionMeta)>> {
-        todo!()
+    ) -> ProviderResult<Option<(TransactionSigned, TransactionMeta)>> {
+        // Information required on indexing table [`tables::TransactionBlock`]
+        Err(ProviderError::UnsupportedProvider)
     }
 
-    fn transaction_block(&self, _id: TxNumber) -> RethResult<Option<BlockNumber>> {
-        todo!()
+    fn transaction_block(&self, _id: TxNumber) -> ProviderResult<Option<BlockNumber>> {
+        // Information on indexing table [`tables::TransactionBlock`]
+        Err(ProviderError::UnsupportedProvider)
     }
 
     fn transactions_by_block(
         &self,
         _block_id: BlockHashOrNumber,
-    ) -> RethResult<Option<Vec<TransactionSigned>>> {
-        todo!()
+    ) -> ProviderResult<Option<Vec<TransactionSigned>>> {
+        // Related to indexing tables. Live database should get the tx_range and call snapshot
+        // provider with `transactions_by_tx_range` instead.
+        Err(ProviderError::UnsupportedProvider)
     }
 
     fn transactions_by_block_range(
         &self,
         _range: impl RangeBounds<BlockNumber>,
-    ) -> RethResult<Vec<Vec<TransactionSigned>>> {
-        todo!()
+    ) -> ProviderResult<Vec<Vec<TransactionSigned>>> {
+        // Related to indexing tables. Live database should get the tx_range and call snapshot
+        // provider with `transactions_by_tx_range` instead.
+        Err(ProviderError::UnsupportedProvider)
     }
 
-    fn senders_by_tx_range(&self, _range: impl RangeBounds<TxNumber>) -> RethResult<Vec<Address>> {
-        todo!()
+    fn senders_by_tx_range(
+        &self,
+        range: impl RangeBounds<TxNumber>,
+    ) -> ProviderResult<Vec<Address>> {
+        let txs = self.transactions_by_tx_range(range)?;
+        TransactionSignedNoHash::recover_signers(&txs, txs.len())
+            .ok_or(ProviderError::SenderRecoveryError)
     }
 
     fn transactions_by_tx_range(
         &self,
-        _range: impl RangeBounds<TxNumber>,
-    ) -> RethResult<Vec<reth_primitives::TransactionSignedNoHash>> {
-        todo!()
+        range: impl RangeBounds<TxNumber>,
+    ) -> ProviderResult<Vec<reth_primitives::TransactionSignedNoHash>> {
+        let range = to_range(range);
+        let mut cursor = self.cursor()?;
+        let mut txes = Vec::with_capacity((range.end - range.start) as usize);
+
+        for num in range {
+            if let Some(tx) =
+                cursor.get_one::<TransactionMask<TransactionSignedNoHash>>(num.into())?
+            {
+                txes.push(tx)
+            }
+        }
+        Ok(txes)
     }
 
-    fn transaction_sender(&self, _id: TxNumber) -> RethResult<Option<Address>> {
-        todo!()
+    fn transaction_sender(&self, num: TxNumber) -> ProviderResult<Option<Address>> {
+        Ok(self
+            .cursor()?
+            .get_one::<TransactionMask<TransactionSignedNoHash>>(num.into())?
+            .and_then(|tx| tx.recover_signer()))
     }
+}
+
+impl<'a> ReceiptProvider for SnapshotJarProvider<'a> {
+    fn receipt(&self, num: TxNumber) -> ProviderResult<Option<Receipt>> {
+        self.cursor()?.get_one::<ReceiptMask<Receipt>>(num.into())
+    }
+
+    fn receipt_by_hash(&self, hash: TxHash) -> ProviderResult<Option<Receipt>> {
+        if let Some(tx_snapshot) = &self.auxiliar_jar {
+            if let Some(num) = tx_snapshot.transaction_id(hash)? {
+                return self.receipt(num)
+            }
+        }
+        Ok(None)
+    }
+
+    fn receipts_by_block(&self, _block: BlockHashOrNumber) -> ProviderResult<Option<Vec<Receipt>>> {
+        // Related to indexing tables. Snapshot should get the tx_range and call snapshot
+        // provider with `receipt()` instead for each
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+fn to_range<R: RangeBounds<u64>>(bounds: R) -> Range<u64> {
+    let start = match bounds.start_bound() {
+        std::ops::Bound::Included(&v) => v,
+        std::ops::Bound::Excluded(&v) => v + 1,
+        std::ops::Bound::Unbounded => 0,
+    };
+
+    let end = match bounds.end_bound() {
+        std::ops::Bound::Included(&v) => v + 1,
+        std::ops::Bound::Excluded(&v) => v,
+        std::ops::Bound::Unbounded => u64::MAX,
+    };
+
+    start..end
 }

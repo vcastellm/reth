@@ -7,7 +7,7 @@ use jsonrpsee::{
     types::{error::CALL_EXECUTION_FAILED_CODE, ErrorObject},
 };
 use reth_interfaces::RethError;
-use reth_primitives::{Address, Bytes, U256};
+use reth_primitives::{revm_primitives::InvalidHeader, Address, Bytes, U256};
 use reth_revm::tracing::js::JsInspectorError;
 use reth_rpc_types::{error::EthRpcErrorCode, BlockError, CallInputError};
 use reth_transaction_pool::error::{
@@ -15,7 +15,6 @@ use reth_transaction_pool::error::{
     PoolTransactionError,
 };
 use revm::primitives::{EVMError, ExecutionResult, Halt, OutOfGasError};
-use revm_primitives::InvalidHeader;
 use std::time::Duration;
 
 /// Result alias
@@ -101,6 +100,22 @@ pub enum EthApiError {
     InternalJsTracerError(String),
     #[error(transparent)]
     CallInputError(#[from] CallInputError),
+    /// Optimism related error
+    #[error(transparent)]
+    #[cfg(feature = "optimism")]
+    Optimism(#[from] OptimismEthApiError),
+}
+
+/// Eth Optimism Api Error
+#[cfg(feature = "optimism")]
+#[derive(Debug, thiserror::Error)]
+pub enum OptimismEthApiError {
+    /// Wrapper around a [hyper::Error].
+    #[error(transparent)]
+    HyperError(#[from] hyper::Error),
+    /// Wrapper around an [http::Error].
+    #[error(transparent)]
+    HttpError(#[from] http::Error),
 }
 
 impl From<EthApiError> for ErrorObject<'static> {
@@ -137,6 +152,11 @@ impl From<EthApiError> for ErrorObject<'static> {
             err @ EthApiError::InternalBlockingTaskError => internal_rpc_err(err.to_string()),
             err @ EthApiError::InternalEthError => internal_rpc_err(err.to_string()),
             err @ EthApiError::CallInputError(_) => invalid_params_rpc_err(err.to_string()),
+            #[cfg(feature = "optimism")]
+            EthApiError::Optimism(err) => match err {
+                OptimismEthApiError::HyperError(err) => internal_rpc_err(err.to_string()),
+                OptimismEthApiError::HttpError(err) => internal_rpc_err(err.to_string()),
+            },
         }
     }
 }
@@ -314,6 +334,22 @@ pub enum RpcInvalidTransactionError {
     /// Blob transaction is a create transaction
     #[error("blob transaction is a create transaction")]
     BlobTransactionIsCreate,
+    /// Optimism related error
+    #[error(transparent)]
+    #[cfg(feature = "optimism")]
+    Optimism(#[from] OptimismInvalidTransactionError),
+}
+
+/// Optimism specific invalid transaction errors
+#[cfg(feature = "optimism")]
+#[derive(thiserror::Error, Debug)]
+pub enum OptimismInvalidTransactionError {
+    /// A deposit transaction was submitted as a system transaction post-regolith.
+    #[error("no system transactions allowed after regolith")]
+    DepositSystemTxPostRegolith,
+    /// A deposit transaction halted post-regolith
+    #[error("deposit transaction halted after regolith")]
+    HaltedDepositPostRegolith,
 }
 
 impl RpcInvalidTransactionError {
@@ -422,6 +458,16 @@ impl From<revm::primitives::InvalidTransaction> for RpcInvalidTransactionError {
             InvalidTransaction::BlobCreateTransaction => {
                 RpcInvalidTransactionError::BlobTransactionIsCreate
             }
+            #[cfg(feature = "optimism")]
+            InvalidTransaction::DepositSystemTxPostRegolith => {
+                RpcInvalidTransactionError::Optimism(
+                    OptimismInvalidTransactionError::DepositSystemTxPostRegolith,
+                )
+            }
+            #[cfg(feature = "optimism")]
+            InvalidTransaction::HaltedDepositPostRegolith => RpcInvalidTransactionError::Optimism(
+                OptimismInvalidTransactionError::HaltedDepositPostRegolith,
+            ),
         }
     }
 }

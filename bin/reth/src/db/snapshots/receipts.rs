@@ -3,7 +3,7 @@ use super::{
     Command, Compression, PerfectHashingFunction,
 };
 use rand::{seq::SliceRandom, Rng};
-use reth_db::{database::Database, open_db_read_only, table::Decompress};
+use reth_db::{database::Database, open_db_read_only, snapshot::ReceiptMask};
 use reth_interfaces::db::LogLevel;
 use reth_primitives::{
     snapshot::{Filters, InclusionFilter},
@@ -14,25 +14,40 @@ use reth_provider::{
     ReceiptProvider, TransactionsProvider, TransactionsProviderExt,
 };
 use reth_snapshot::{segments, segments::Segment};
-use std::{path::Path, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 impl Command {
     pub(crate) fn generate_receipts_snapshot<DB: Database>(
         &self,
-        provider: &DatabaseProviderRO<'_, DB>,
+        provider: &DatabaseProviderRO<DB>,
         compression: Compression,
         inclusion_filter: InclusionFilter,
         phf: PerfectHashingFunction,
     ) -> eyre::Result<()> {
-        let segment = segments::Receipts::new(
-            compression,
-            if self.with_filters {
-                Filters::WithFilters(inclusion_filter, phf)
-            } else {
-                Filters::WithoutFilters
-            },
-        );
-        segment.snapshot::<DB>(provider, self.from..=(self.from + self.block_interval - 1))?;
+        let block_range = self.block_range();
+        let filters = if self.with_filters {
+            Filters::WithFilters(inclusion_filter, phf)
+        } else {
+            Filters::WithoutFilters
+        };
+
+        let segment: segments::Receipts = segments::Receipts::new(compression, filters);
+        segment.snapshot::<DB>(provider, PathBuf::default(), block_range.clone())?;
+
+        // Default name doesn't have any configuration
+        let tx_range = provider.transaction_range_by_block_range(block_range.clone())?;
+        reth_primitives::fs::rename(
+            SnapshotSegment::Receipts.filename(&block_range, &tx_range),
+            SnapshotSegment::Receipts.filename_with_configuration(
+                filters,
+                compression,
+                &block_range,
+                &tx_range,
+            ),
+        )?;
 
         Ok(())
     }
@@ -52,7 +67,7 @@ impl Command {
             Filters::WithoutFilters
         };
 
-        let block_range = self.from..=(self.from + self.block_interval - 1);
+        let block_range = self.block_range();
 
         let mut rng = rand::thread_rng();
 
@@ -62,14 +77,16 @@ impl Command {
 
         let mut row_indexes = tx_range.clone().collect::<Vec<_>>();
 
-        let path = SnapshotSegment::Receipts.filename_with_configuration(
-            filters,
-            compression,
-            &block_range,
-        );
+        let path: PathBuf = SnapshotSegment::Receipts
+            .filename_with_configuration(filters, compression, &block_range, &tx_range)
+            .into();
+
         let provider = SnapshotProvider::default();
-        let jar_provider =
-            provider.get_segment_provider(SnapshotSegment::Receipts, self.from, Some(path))?;
+        let jar_provider = provider.get_segment_provider_from_block(
+            SnapshotSegment::Receipts,
+            self.from,
+            Some(&path),
+        )?;
         let mut cursor = jar_provider.cursor()?;
 
         for bench_kind in [BenchKind::Walk, BenchKind::RandomAll] {
@@ -81,16 +98,9 @@ impl Command {
                 compression,
                 || {
                     for num in row_indexes.iter() {
-                        Receipt::decompress(
-                            cursor
-                                .row_by_number_with_cols::<0b1, 1>(
-                                    (num - tx_range.start()) as usize,
-                                )?
-                                .ok_or(ProviderError::ReceiptNotFound((*num).into()))?[0],
-                        )?;
-                        // TODO: replace with below when eventually SnapshotProvider re-uses cursor
-                        // provider.receipt(num as
-                        // u64)?.ok_or(ProviderError::ReceiptNotFound((*num).into()))?;
+                        cursor
+                            .get_one::<ReceiptMask<Receipt>>((*num).into())?
+                            .ok_or(ProviderError::ReceiptNotFound((*num).into()))?;
                     }
                     Ok(())
                 },
@@ -118,11 +128,9 @@ impl Command {
                 filters,
                 compression,
                 || {
-                    Ok(Receipt::decompress(
-                        cursor
-                            .row_by_number_with_cols::<0b1, 1>((num - tx_range.start()) as usize)?
-                            .ok_or(ProviderError::ReceiptNotFound((num as u64).into()))?[0],
-                    )?)
+                    Ok(cursor
+                        .get_one::<ReceiptMask<Receipt>>(num.into())?
+                        .ok_or(ProviderError::ReceiptNotFound(num.into()))?)
                 },
                 |provider| {
                     Ok(provider
@@ -148,13 +156,9 @@ impl Command {
                 filters,
                 compression,
                 || {
-                    let receipt = Receipt::decompress(
-                        cursor
-                            .row_by_key_with_cols::<0b1, 1>(tx_hash.as_slice())?
-                            .ok_or(ProviderError::ReceiptNotFound(tx_hash.into()))?[0],
-                    )?;
-
-                    Ok(receipt)
+                    Ok(cursor
+                        .get_one::<ReceiptMask<Receipt>>((&tx_hash).into())?
+                        .ok_or(ProviderError::ReceiptNotFound(tx_hash.into()))?)
                 },
                 |provider| {
                     Ok(provider

@@ -168,7 +168,7 @@ impl HeadersClient for FileClient {
     ) -> Self::Output {
         // this just searches the buffer, and fails if it can't find the header
         let mut headers = Vec::new();
-        trace!(target : "downloaders::file", request=?request, "Getting headers");
+        trace!(target: "downloaders::file", request=?request, "Getting headers");
 
         let start_num = match request.start {
             BlockHashOrNumber::Hash(hash) => match self.hash_to_number.get(&hash) {
@@ -192,7 +192,7 @@ impl HeadersClient for FileClient {
             }
         };
 
-        trace!(target : "downloaders::file", range=?range, "Getting headers with range");
+        trace!(target: "downloaders::file", range=?range, "Getting headers with range");
 
         for block_number in range {
             match self.headers.get(&block_number).cloned() {
@@ -267,7 +267,8 @@ mod tests {
         },
         test_utils::TestConsensus,
     };
-    use reth_primitives::SealedHeader;
+    use reth_primitives::{SealedHeader, MAINNET};
+    use reth_provider::ProviderFactory;
     use std::{
         io::{Read, Seek, SeekFrom, Write},
         sync::Arc,
@@ -291,7 +292,7 @@ mod tests {
         let mut downloader = BodiesDownloaderBuilder::default().build(
             client.clone(),
             Arc::new(TestConsensus::default()),
-            db,
+            ProviderFactory::new(db, MAINNET.clone()),
         );
         downloader.set_download_range(0..=19).expect("failed to set download range");
 
@@ -373,7 +374,7 @@ mod tests {
         let mut downloader = BodiesDownloaderBuilder::default().build(
             client.clone(),
             Arc::new(TestConsensus::default()),
-            db,
+            ProviderFactory::new(db, MAINNET.clone()),
         );
         downloader.set_download_range(0..=19).expect("failed to set download range");
 

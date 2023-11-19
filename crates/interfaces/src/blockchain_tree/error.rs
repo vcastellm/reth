@@ -3,6 +3,7 @@
 use crate::{
     consensus::ConsensusError,
     executor::{BlockExecutionError, BlockValidationError},
+    provider::ProviderError,
 };
 use reth_primitives::{BlockHash, BlockNumber, SealedBlock};
 
@@ -201,6 +202,9 @@ pub enum InsertBlockErrorKind {
     /// Block violated tree invariants.
     #[error(transparent)]
     Tree(#[from] BlockchainTreeError),
+    /// Provider error.
+    #[error(transparent)]
+    Provider(#[from] ProviderError),
     /// An internal error occurred, like interacting with the database.
     #[error(transparent)]
     Internal(#[from] Box<dyn std::error::Error + Send + Sync>),
@@ -243,6 +247,8 @@ impl InsertBlockErrorKind {
                     BlockExecutionError::CanonicalCommit { .. } |
                     BlockExecutionError::AppendChainDoesntConnect { .. } |
                     BlockExecutionError::UnavailableForTest => false,
+                    #[cfg(feature = "optimism")]
+                    BlockExecutionError::OptimismBlockExecution(_) => false,
                 }
             }
             InsertBlockErrorKind::Tree(err) => {
@@ -258,7 +264,7 @@ impl InsertBlockErrorKind {
                     BlockchainTreeError::BlockBufferingFailed { .. } => false,
                 }
             }
-            InsertBlockErrorKind::Internal(_) => {
+            InsertBlockErrorKind::Provider(_) | InsertBlockErrorKind::Internal(_) => {
                 // any other error, such as database errors, are considered internal errors
                 false
             }
@@ -330,7 +336,6 @@ impl From<crate::RethError> for InsertBlockErrorKind {
             RethError::Network(err) => InsertBlockErrorKind::Internal(Box::new(err)),
             RethError::Custom(err) => InsertBlockErrorKind::Internal(err.into()),
             RethError::Canonical(err) => InsertBlockErrorKind::Canonical(err),
-            RethError::BlockchainTree(err) => InsertBlockErrorKind::BlockchainTree(err),
         }
     }
 }

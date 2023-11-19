@@ -7,19 +7,19 @@ use crate::{
     },
     table::{Compress, DupSort, Encode, Table, TableImporter},
     tables::{utils::decode_one, Tables, NUM_TABLES},
-    transaction::{DbTx, DbTxGAT, DbTxMut, DbTxMutGAT},
+    transaction::{DbTx, DbTxMut},
     DatabaseError,
 };
 use parking_lot::RwLock;
-use reth_interfaces::db::DatabaseWriteOperation;
-use reth_libmdbx::{ffi::DBI, EnvironmentKind, Transaction, TransactionKind, WriteFlags, RW};
+use reth_interfaces::db::{DatabaseWriteError, DatabaseWriteOperation};
+use reth_libmdbx::{ffi::DBI, Transaction, TransactionKind, WriteFlags, RW};
 use std::{marker::PhantomData, str::FromStr, sync::Arc, time::Instant};
 
 /// Wrapper for the libmdbx transaction.
 #[derive(Debug)]
-pub struct Tx<'a, K: TransactionKind, E: EnvironmentKind> {
+pub struct Tx<K: TransactionKind> {
     /// Libmdbx-sys transaction.
-    pub inner: Transaction<'a, K, E>,
+    pub inner: Transaction<K>,
     /// Database table handle cache.
     pub(crate) db_handles: Arc<RwLock<[Option<DBI>; NUM_TABLES]>>,
     /// Handler for metrics with its own [Drop] implementation for cases when the transaction isn't
@@ -29,20 +29,14 @@ pub struct Tx<'a, K: TransactionKind, E: EnvironmentKind> {
     metrics_handler: Option<MetricsHandler<K>>,
 }
 
-impl<'env, K: TransactionKind, E: EnvironmentKind> Tx<'env, K, E> {
+impl<K: TransactionKind> Tx<K> {
     /// Creates new `Tx` object with a `RO` or `RW` transaction.
-    pub fn new<'a>(inner: Transaction<'a, K, E>) -> Self
-    where
-        'a: 'env,
-    {
+    pub fn new(inner: Transaction<K>) -> Self {
         Self { inner, db_handles: Default::default(), metrics_handler: None }
     }
 
     /// Creates new `Tx` object with a `RO` or `RW` transaction and optionally enables metrics.
-    pub fn new_with_metrics<'a>(inner: Transaction<'a, K, E>, with_metrics: bool) -> Self
-    where
-        'a: 'env,
-    {
+    pub fn new_with_metrics(inner: Transaction<K>, with_metrics: bool) -> Self {
         let metrics_handler = with_metrics.then(|| {
             let handler = MetricsHandler::<K> {
                 txn_id: inner.id(),
@@ -81,7 +75,7 @@ impl<'env, K: TransactionKind, E: EnvironmentKind> Tx<'env, K, E> {
     }
 
     /// Create db Cursor
-    pub fn new_cursor<T: Table>(&self) -> Result<Cursor<'env, K, T>, DatabaseError> {
+    pub fn new_cursor<T: Table>(&self) -> Result<Cursor<K, T>, DatabaseError> {
         let inner = self
             .inner
             .cursor_with_dbi(self.get_dbi::<T>()?)
@@ -128,7 +122,7 @@ impl<'env, K: TransactionKind, E: EnvironmentKind> Tx<'env, K, E> {
         &self,
         operation: Operation,
         value_size: Option<usize>,
-        f: impl FnOnce(&Transaction<'_, K, E>) -> R,
+        f: impl FnOnce(&Transaction<K>) -> R,
     ) -> R {
         if self.metrics_handler.is_some() {
             OperationMetrics::record(T::NAME, operation, value_size, || f(&self.inner))
@@ -173,19 +167,12 @@ impl<K: TransactionKind> Drop for MetricsHandler<K> {
     }
 }
 
-impl<'a, K: TransactionKind, E: EnvironmentKind> DbTxGAT<'a> for Tx<'_, K, E> {
-    type Cursor<T: Table> = Cursor<'a, K, T>;
-    type DupCursor<T: DupSort> = Cursor<'a, K, T>;
-}
+impl TableImporter for Tx<RW> {}
 
-impl<'a, K: TransactionKind, E: EnvironmentKind> DbTxMutGAT<'a> for Tx<'_, K, E> {
-    type CursorMut<T: Table> = Cursor<'a, RW, T>;
-    type DupCursorMut<T: DupSort> = Cursor<'a, RW, T>;
-}
+impl<K: TransactionKind> DbTx for Tx<K> {
+    type Cursor<T: Table> = Cursor<K, T>;
+    type DupCursor<T: DupSort> = Cursor<K, T>;
 
-impl<E: EnvironmentKind> TableImporter for Tx<'_, RW, E> {}
-
-impl<K: TransactionKind, E: EnvironmentKind> DbTx for Tx<'_, K, E> {
     fn get<T: Table>(&self, key: T::Key) -> Result<Option<<T as Table>::Value>, DatabaseError> {
         self.execute_with_operation_metric::<T, _>(Operation::Get, None, |tx| {
             tx.get(self.get_dbi::<T>()?, key.encode().as_ref())
@@ -208,14 +195,12 @@ impl<K: TransactionKind, E: EnvironmentKind> DbTx for Tx<'_, K, E> {
     }
 
     // Iterate over read only values in database.
-    fn cursor_read<T: Table>(&self) -> Result<<Self as DbTxGAT<'_>>::Cursor<T>, DatabaseError> {
+    fn cursor_read<T: Table>(&self) -> Result<Self::Cursor<T>, DatabaseError> {
         self.new_cursor()
     }
 
     /// Iterate over read only values in database.
-    fn cursor_dup_read<T: DupSort>(
-        &self,
-    ) -> Result<<Self as DbTxGAT<'_>>::DupCursor<T>, DatabaseError> {
+    fn cursor_dup_read<T: DupSort>(&self) -> Result<Self::DupCursor<T>, DatabaseError> {
         self.new_cursor()
     }
 
@@ -229,7 +214,10 @@ impl<K: TransactionKind, E: EnvironmentKind> DbTx for Tx<'_, K, E> {
     }
 }
 
-impl<E: EnvironmentKind> DbTxMut for Tx<'_, RW, E> {
+impl DbTxMut for Tx<RW> {
+    type CursorMut<T: Table> = Cursor<RW, T>;
+    type DupCursorMut<T: DupSort> = Cursor<RW, T>;
+
     fn put<T: Table>(&self, key: T::Key, value: T::Value) -> Result<(), DatabaseError> {
         let key = key.encode();
         let value = value.compress();
@@ -238,12 +226,13 @@ impl<E: EnvironmentKind> DbTxMut for Tx<'_, RW, E> {
             Some(value.as_ref().len()),
             |tx| {
                 tx.put(self.get_dbi::<T>()?, key.as_ref(), value, WriteFlags::UPSERT).map_err(|e| {
-                    DatabaseError::Write {
+                    DatabaseWriteError {
                         code: e.into(),
                         operation: DatabaseWriteOperation::Put,
                         table_name: T::NAME,
-                        key: Box::from(key.as_ref()),
+                        key: key.into(),
                     }
+                    .into()
                 })
             },
         )
@@ -273,15 +262,11 @@ impl<E: EnvironmentKind> DbTxMut for Tx<'_, RW, E> {
         Ok(())
     }
 
-    fn cursor_write<T: Table>(
-        &self,
-    ) -> Result<<Self as DbTxMutGAT<'_>>::CursorMut<T>, DatabaseError> {
+    fn cursor_write<T: Table>(&self) -> Result<Self::CursorMut<T>, DatabaseError> {
         self.new_cursor()
     }
 
-    fn cursor_dup_write<T: DupSort>(
-        &self,
-    ) -> Result<<Self as DbTxMutGAT<'_>>::DupCursorMut<T>, DatabaseError> {
+    fn cursor_dup_write<T: DupSort>(&self) -> Result<Self::DupCursorMut<T>, DatabaseError> {
         self.new_cursor()
     }
 }
