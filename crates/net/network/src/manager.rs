@@ -74,7 +74,28 @@ use tracing::{debug, error, trace, warn};
 ///
 /// The [`NetworkManager`] is the container type for all parts involved with advancing the network.
 ///
-/// include_mmd!("docs/mermaid/network-manager.mmd")
+/// ```mermaid
+/// graph TB
+///   handle(NetworkHandle)
+///   events(NetworkEvents)
+///   transactions(Transactions Task)
+///   ethrequest(ETH Request Task)
+///   discovery(Discovery Task)
+///   subgraph NetworkManager
+///     direction LR
+///     subgraph Swarm
+///         direction TB
+///         B1[(Session Manager)]
+///         B2[(Connection Lister)]
+///         B3[(Network State)]
+///     end
+///  end
+///  handle <--> |request response channel| NetworkManager
+///  NetworkManager --> |Network events| events
+///  transactions <--> |transactions| NetworkManager
+///  ethrequest <--> |ETH request handing| NetworkManager
+///  discovery --> |Discovered peers| NetworkManager
+/// ```
 #[derive(Debug)]
 #[must_use = "The NetworkManager does nothing unless polled"]
 pub struct NetworkManager<N: NetworkPrimitives = EthNetworkPrimitives> {
